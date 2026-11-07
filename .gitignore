@@ -6,7 +6,8 @@ __pycache__/
 
 # Ignore ALL data files
 # data/raw/*.csv
-data/processed/*.npy
+# !data/raw/churn.csv
+# data/processed/*.npy
 
 # Ignore model artifacts
 models/*.pkl

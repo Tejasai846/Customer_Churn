@@ -1,1314 +1,536 @@
-# Customer Churn Prediction – MLOps Project
+# Telco Customer Churn Prediction — End-to-End MLOps Platform
 
-## 📌 Project Overview
+An end-to-end Machine Learning Operations (MLOps) project for predicting customer churn and demonstrating how an ML model can be validated, trained, tracked, quality-gated, versioned, monitored, and selectively deployed.
 
-This project implements an end-to-end **Customer Churn Prediction MLOps pipeline** using machine learning and MLOps practices.
-
-The objective is to predict whether a customer is likely to **churn** based on customer demographic, service, contract, billing, and account-related information.
-
-The project covers the complete machine learning and MLOps lifecycle:
-
-* Data preprocessing
-* Data validation
-* Processed-output validation
-* Model training
-* Model evaluation
-* Experiment tracking
-* Model reproducibility
-* Model registry
-* Model versioning
-* Model quality gates
-* Automated model lifecycle management
-* Production inference
-* Failure injection testing
-* Git version control
-* GitHub Actions automation
-* Generation of reports and artifacts
+**GitHub repository:** [jnaneswar077/churn-prediction-mlops](https://github.com/jnaneswar077/churn-prediction-mlops)  
+**Primary branch:** `main`  
+**Project status:** Labs 1–13 integrated. The core monitoring-to-retraining workflow has been executed successfully through GitHub Actions on a self-hosted Windows runner. Scheduled execution is configured; the runner currently uses interactive mode, so the machine and runner process must remain available.
 
 ---
 
-## 🎯 Problem Statement
+## Table of Contents
 
-Customer churn is an important business problem where customers stop using a company's products or services.
-
-The goal of this project is to develop a machine learning system that can:
-
-1. Process customer churn data.
-2. Prepare the data for machine learning.
-3. Validate the raw dataset.
-4. Train a classification model.
-5. Evaluate model performance.
-6. Track experiments using MLflow.
-7. Validate processed outputs.
-8. Register trained models.
-9. Apply an automated model quality gate.
-10. Compare Staging and Production models.
-11. Automatically promote or archive model versions.
-12. Generate Production predictions.
-13. Test failure scenarios.
-14. Maintain reproducibility.
-15. Automate the workflow through GitHub Actions.
+- [Project Overview](#project-overview)
+- [Objectives](#objectives)
+- [Key Capabilities](#key-capabilities)
+- [Architecture](#architecture)
+- [End-to-End Workflow](#end-to-end-workflow)
+- [Dataset and Ingestion Rules](#dataset-and-ingestion-rules)
+- [Model Evaluation and Lifecycle Policy](#model-evaluation-and-lifecycle-policy)
+- [Technology Stack](#technology-stack)
+- [Repository Layout](#repository-layout)
+- [Environment Setup](#environment-setup)
+- [Running the System](#running-the-system)
+- [GitHub Actions Automation](#github-actions-automation)
+- [Model Serving and Deployment](#model-serving-and-deployment)
+- [Important Reports and Artifacts](#important-reports-and-artifacts)
+- [Verified Integration Run](#verified-integration-run)
+- [Operational Requirements and Limitations](#operational-requirements-and-limitations)
+- [Troubleshooting](#troubleshooting)
+- [Documentation](#documentation)
+- [Security Notes](#security-notes)
 
 ---
 
-## 🧠 Machine Learning Problem
+## Project Overview
 
-This is a **binary classification problem**.
+Customer churn prediction estimates whether a customer is likely to stop using a service. This repository uses a Telco Customer Churn dataset and builds an MLOps workflow around the model—not just a script that trains a classifier.
 
-### Target Variable
+The project evolved from data preparation and a baseline Random Forest model into a modular system with schema validation, reproducible preprocessing, MLflow experiment tracking and model registration, evaluation, a recall-based quality gate, lifecycle decisions, inference, drift reporting, ingestion lineage, Docker packaging, Kubernetes deployment, and GitHub Actions automation.
 
-The target variable is:
+A central design principle is that **a successfully trained model is not automatically a Production model**. A candidate must pass the configured quality gate and then improve on the current Production model according to the configured lifecycle decision metric. If the candidate is not promoted, the Production model remains in use and deployment is skipped.
 
-```text
-Churn
+## Objectives
+
+- Make data preparation and model training repeatable.
+- Validate raw data and processed outputs before model training.
+- Track runs, evaluation metrics, artifacts, and registered model versions with MLflow.
+- Prevent candidates below the configured recall threshold from reaching lifecycle promotion.
+- Compare candidate and Production models before changing the live deployment.
+- Track incoming dataset batches by file hash and lineage, and prevent duplicate ingestion.
+- Use drift reports to decide whether the existing ML pipeline should be triggered.
+- Package the serving application with Docker and manage the API deployment with Kubernetes.
+- Use GitHub Actions and a self-hosted Windows runner to automate monitoring and pipeline execution.
+
+## Key Capabilities
+
+| Capability | Implementation |
+|---|---|
+| Raw-data validation | Schema and data-quality validation before downstream processing |
+| Reproducible preprocessing | Scikit-learn preprocessing pipeline and fixed test-set handling |
+| Experiment tracking | MLflow parameters, metrics, artifacts, and runs |
+| Model registry | `Telco_Churn_Production_Model` |
+| Quality gate | Configured minimum recall of `0.70` |
+| Lifecycle decisions | Compare the candidate against the Production model using recall |
+| Dataset versioning | SHA-256 batch hashes, archived dataset snapshots, and lineage records |
+| Drift monitoring | Combine data-drift, prediction-drift, and concept-drift reports |
+| Conditional retraining | Invoke the existing ML pipeline when drift and an incoming batch are present |
+| Promotion-gated deployment | Skip deployment unless the lifecycle report confirms promotion |
+| Model serving | FastAPI application packaged in a Docker image |
+| Orchestration | Kubernetes deployment and service manifests |
+| Workflow automation | GitHub Actions with a self-hosted Windows runner |
+| Failure handling | Fail-fast pipeline stages and failure-injection/recovery exercises |
+
+## Architecture
+
+The architecture has two connected flows: the **model lifecycle pipeline** and the **monitoring/retraining trigger**.
+
+### Monitoring and retraining flow
+
+```mermaid
+flowchart TD
+    A[GitHub Actions trigger] --> B[Self-hosted Windows runner]
+    B --> C[12_monitor_trigger.py]
+    C --> D[12_drift_analysis.py]
+    D --> E{Drift detected?}
+    E -- No --> F[Write monitoring report; stop]
+    E -- Yes --> G{data/raw/new_churn.csv exists?}
+    G -- No --> H[Record waiting-for-data result]
+    G -- Yes --> I[churn_prediction_pipeline.py]
+    I --> J[01_load_data.py]
+    J --> K{Batch hash already in lineage?}
+    K -- Yes --> L[Skip duplicate batch and retraining]
+    K -- No --> M[Validate schema and customer IDs]
+    M --> N[Archive prior dataset; append batch; update lineage]
+    N --> O[Continue ML pipeline]
 ```
 
-The values are converted as follows:
+### Model lifecycle and deployment flow
 
-| Original Value | Encoded Value |
-| -------------- | ------------: |
-| No             |             0 |
-| Yes            |             1 |
+```mermaid
+flowchart TD
+    A[Data loading] --> B[Raw data validation]
+    B --> C[Preprocessing]
+    C --> D[Processed-output validation]
+    D --> E[Training + MLflow registration]
+    E --> F[Model evaluation]
+    F --> G{Recall >= configured threshold?}
+    G -- No --> H[Fail quality gate and halt]
+    G -- Yes --> I[Automated lifecycle comparison]
+    I --> J{Candidate promoted?}
+    J -- No --> K[Keep Production model; skip deployment]
+    J -- Yes --> L[Prepare model, preprocessor, and metadata]
+    L --> M[Build/reuse versioned Docker image]
+    M --> N[Update Kubernetes deployment]
+    N --> O[Wait for rollout]
+    K --> P[Production inference]
+    O --> P
+```
 
-Where:
+## End-to-End Workflow
 
-* `0` → Customer does not churn
-* `1` → Customer churns
+The main orchestrator is `src/mlops_pipeline/churn_prediction_pipeline.py`. Its stages are run as separate Python processes and use fail-fast behavior when a stage fails.
 
----
+| Stage | Script | Responsibility |
+|---|---|---|
+| 1 | `01_load_data.py` | Load current data and ingest a new batch when present and not previously ingested |
+| 2 | `02_validate_data.py` | Validate the raw dataset schema and constraints |
+| 3 | `03_preprocessing.py` | Prepare training data and fit/persist preprocessing transformations |
+| 4 | `04_validate_outputs.py` | Validate the processed outputs |
+| 5 | `05_train_registry.py` | Train the model, record the MLflow run, and register the candidate |
+| 6 | `06_model_evaluation.py` | Evaluate the candidate on the held-out test set |
+| 7 | `07_quality_gate.py` | Enforce the configured quality threshold |
+| 8 | `08_automate_lifecycle.py` | Compare candidate and Production metrics and decide whether to promote |
+| 9 | `deploy_if_promoted.py` | Invoke deployment only when the lifecycle report indicates promotion |
+| 10 | `09_inference.py` | Run inference using the current Production model |
 
-## 📊 Dataset
+If the data-loading report says `already_ingested` or `no_new_data`, the orchestrator stops early rather than retraining on unchanged data. This is expected behavior, not a pipeline failure.
 
-The project uses a customer churn dataset stored at:
+## Dataset and Ingestion Rules
+
+The primary dataset is stored at:
 
 ```text
 data/raw/churn.csv
 ```
 
-The dataset contains customer-related information such as:
+The current dataset snapshot recorded during the verified integration run had **7,344 rows and 21 columns**. The fixed held-out test set contained 1,409 records, leaving 5,935 training records for that run. Dataset size can change as additional valid batches are ingested.
 
-* Customer demographics
-* Account information
-* Contract information
-* Internet services
-* Payment information
-* Monthly charges
-* Total charges
-* Churn status
+Important fields include `customerID`, the target `Churn`, numerical attributes such as `tenure`, `MonthlyCharges`, and `TotalCharges`, and categorical attributes such as `Contract`, `InternetService`, and `PaymentMethod`.
 
-The `customerID` column is removed during preprocessing because it is an identifier rather than a predictive feature.
+### Incoming batch
 
-### Dataset Size
-
-The successfully executed pipeline loaded:
+Place an incoming batch at:
 
 ```text
-Rows    : 7044
-Columns : 21
+data/raw/new_churn.csv
 ```
 
----
+The batch must have the expected schema. The ingestion script validates the schema and checks that customer IDs are unique within the batch and do not overlap with IDs already present in `churn.csv`.
 
-# 🏗️ Project Architecture
+The ingestion process:
+
+1. Computes the batch SHA-256 hash.
+2. Checks `data/raw/archive/dataset_lineage.json` for that hash.
+3. If the hash has already been ingested, writes an `already_ingested` report and skips the append/retraining path.
+4. Otherwise, validates batch identity, archives the previous dataset snapshot, appends the new rows to `churn.csv`, and updates lineage and the data-load report.
+
+This distinction matters: **a file existing on disk does not mean it represents a new batch**. The hash and lineage determine whether the batch was previously ingested.
+
+Do not manually run `01_load_data.py` before a GitHub Actions integration test if the intention is to test that the workflow itself ingests the batch—the manual run would consume the batch first.
+
+## Model Evaluation and Lifecycle Policy
+
+The integrated pipeline uses a Random Forest classifier. Configuration is maintained in `config.yaml`; the README should not be treated as a substitute for the runtime configuration.
+
+Reported evaluation metrics include:
+
+- Accuracy
+- Precision
+- Recall
+- F1 score
+- ROC-AUC
+- Confusion matrix
+
+The quality gate is configured to require:
+
+```yaml
+quality_gate:
+  metric: recall
+  minimum_value: 0.70
+```
+
+The lifecycle manager uses recall as the decision metric. Passing the quality gate means that a candidate is eligible for lifecycle evaluation; it **does not** guarantee promotion. If the candidate does not improve on Production, it is archived and the Production model remains unchanged.
+
+## Technology Stack
+
+| Area | Tools |
+|---|---|
+| Language and data processing | Python, pandas, NumPy |
+| Machine learning | scikit-learn, Random Forest, Joblib |
+| Data validation | Pandera and project validation utilities |
+| Experiment tracking and registry | MLflow |
+| Configuration and reports | YAML, JSON, CSV |
+| API serving | FastAPI, Uvicorn, Pydantic |
+| Containerization | Docker, Docker Desktop |
+| Orchestration | Kubernetes, `kubectl` |
+| Automation and version control | Git, GitHub, GitHub Actions |
+| Local automation host | Windows with a self-hosted GitHub Actions runner |
+
+## Repository Layout
+
+The following is a focused map of the main project components; some intermediate artifacts are generated at runtime.
 
 ```text
-Customer_Churn/
-
-│
+churn-prediction/
 ├── .github/
 │   └── workflows/
 │       ├── lab8_ci.yml
-│       └── lab9_failure_tests.yml
-│
+│       ├── lab13_monitoring.yml
+│       └── lab13_runner_test.yml
+├── api/
+│   └── main.py
 ├── data/
 │   ├── raw/
-│   │   └── churn.csv
-│   │
+│   │   ├── churn.csv
+│   │   ├── new_churn.csv                 # incoming batch; local/runtime input
+│   │   └── archive/
+│   │       ├── churn_vNN.csv
+│   │       └── dataset_lineage.json
 │   └── processed/
-│       ├── X_train_final.npy
-│       ├── X_test_final.npy
-│       ├── y_train.npy
-│       ├── y_test.npy
-│       ├── X_train_raw.csv
-│       ├── X_test_raw.csv
-│       └── dataset_metadata.json
-│
-├── notebooks/
-│   └── project_implementation.ipynb
-│
-├── pipelines/
-│   ├── run_lab3_baseline.py
-│   ├── run_lab4_tracking.py
-│   ├── run_lab5_pipeline.py
-│   └── run_lab6_registry.py
-│
+├── deployment/
+│   ├── deploy_production.py
+│   ├── model.pkl                          # prepared for serving
+│   ├── preprocessor.pkl
+│   └── model_metadata.json
+├── docs/
+│   ├── ARCHITECTURE.md
+│   ├── LAB13_END_TO_END.md
+│   ├── RUNBOOK.md
+│   ├── LAB7_PIPELINE.md
+│   ├── LAB8_CI_REPORT.md
+│   ├── LAB9_FAILURE_HANDLING_REPORT.md
+│   └── MLFLOW_CI_SETUP.md
+├── k8s/
+│   ├── deployment.yaml
+│   └── service.yaml
 ├── src/
-│   ├── mlops_pipeline/
-│   │   ├── 01_load_data.py
-│   │   ├── 02_validate_data.py
-│   │   ├── 03_preprocessing.py
-│   │   ├── 04_validate_outputs.py
-│   │   ├── 05_train_registry.py
-│   │   ├── 06_model_evaluation.py
-│   │   ├── 07_quality_gate.py
-│   │   ├── 08_automate_lifecycle.py
-│   │   ├── 09_inference.py
-│   │   ├── 10_failure_injection.py
-│   │   └── churn_prediction_pipeline.py
-│   │
-│   ├── automate_lifecycle.py
-│   ├── evaluate.py
-│   ├── generate_registry_report.py
-│   ├── preprocess.py
-│   ├── preprocess_pipeline.py
-│   ├── train.py
-│   ├── train_registry.py
-│   ├── validate_data.py
-│   └── validate_outputs.py
-│
-├── models/
-│   └── Generated model files
-│
-├── outputs/
-│   └── Generated prediction and evaluation outputs
-│
-├── logs/
-│   └── Execution logs
-│
-├── artifacts/
-│   └── Generated reports and artifacts
-│
+│   └── mlops_pipeline/
+│       ├── 01_load_data.py
+│       ├── 02_validate_data.py
+│       ├── 03_preprocessing.py
+│       ├── 04_validate_outputs.py
+│       ├── 05_train_registry.py
+│       ├── 06_model_evaluation.py
+│       ├── 07_quality_gate.py
+│       ├── 08_automate_lifecycle.py
+│       ├── 09_inference.py
+│       ├── 10_failure_injection.py
+│       ├── 12_monitor_trigger.py
+│       ├── 12_drift_analysis.py
+│       ├── deploy_if_promoted.py
+│       └── churn_prediction_pipeline.py
 ├── config.yaml
+├── Dockerfile
 ├── requirements.txt
-├── .gitignore
+├── requirements-api.txt
 └── README.md
 ```
 
----
+## Environment Setup
 
-# 🔄 MLOps Workflow
+The current automation is designed for the Windows development environment used by this project.
 
-The complete production pipeline is:
+### Prerequisites
 
-```text
-Raw Dataset
-     │
-     ▼
-1. Data Loading
-     │
-     ▼
-2. Raw Data Validation
-     │
-     ▼
-3. Data Preprocessing
-     │
-     ▼
-4. Processed Output Validation
-     │
-     ▼
-5. Model Training + MLflow + Model Registry
-     │
-     ▼
-6. Model Evaluation
-     │
-     ▼
-7. Model Quality Gate
-     │
-     ├── FAIL → Pipeline Stops
-     │
-     ▼
-8. Automated Model Lifecycle
-     │
-     ├── Better Model → Production
-     │
-     └── Not Better → Archive
-     │
-     ▼
-9. Production Inference
-```
+- Windows and PowerShell
+- Python 3.11 (the serving container uses `python:3.11-slim`)
+- Git
+- Docker Desktop with Linux containers enabled
+- Kubernetes enabled in Docker Desktop, plus `kubectl`
+- Access to the repository and the local MLflow tracking store/artifacts
 
----
+### Create a virtual environment
 
-# ⚙️ Technologies Used
-
-| Technology       | Purpose                                  |
-| ---------------- | ---------------------------------------- |
-| Python           | Programming language                     |
-| Pandas           | Data manipulation                        |
-| NumPy            | Numerical computation                    |
-| Scikit-learn     | Machine learning                         |
-| Joblib           | Model serialization                      |
-| MLflow           | Experiment tracking and model management |
-| SQLite           | MLflow tracking backend                  |
-| Pandera          | Data validation                          |
-| PyYAML           | Configuration management                 |
-| Jupyter Notebook | Exploratory analysis                     |
-| Git              | Version control                          |
-| GitHub           | Source-code hosting                      |
-| GitHub Actions   | CI automation                            |
-| VS Code          | Development environment                  |
-
----
-
-# 🐍 Python Environment
-
-It is recommended to use a Python virtual environment.
-
-Create the environment:
-
-```bash
-python -m venv .venv
-```
-
-On Windows, if the Python Launcher is available:
+Run these commands from the repository root:
 
 ```powershell
-py -m venv .venv
-```
-
-Activate it:
-
-```powershell
-.venv\Scripts\activate
-```
-
-After activation, the terminal should show:
-
-```text
-(.venv)
-```
-
----
-
-# 📦 Installation
-
-Clone the repository:
-
-```bash
-git clone https://github.com/Tejasai846/Customer_Churn.git
-```
-
-Move into the project directory:
-
-```bash
-cd Customer_Churn
-```
-
-Create a virtual environment:
-
-```powershell
-py -m venv .venv
-```
-
-Activate the environment:
-
-```powershell
-.venv\Scripts\activate
-```
-
-Install the required packages:
-
-```powershell
+python -m venv venv
+.\venv\Scripts\Activate.ps1
 python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
 ```
 
----
-
-# 📁 Dataset Location
-
-Place the dataset in:
-
-```text
-data/raw/churn.csv
-```
-
-Expected structure:
-
-```text
-data/
-└── raw/
-    └── churn.csv
-```
-
-The dataset path is configured in:
-
-```text
-config.yaml
-```
-
----
-
-# ⚙️ Configuration
-
-The MLOps pipeline uses `config.yaml` for dataset, preprocessing, model, MLflow, registry, and quality-gate configuration.
-
-The current configuration is:
-
-```yaml
-data:
-  raw_path: "data/raw/churn.csv"
-  processed_dir: "data/processed"
-  target_column: "Churn"
-  id_column: "customerID"
-
-split:
-  test_size: 0.2
-  random_state: 42
-
-paths:
-  preprocessor: "models/preprocessor.pkl"
-  model: "models/random_forest_model.pkl"
-  evaluation_report: "artifacts/model_evaluation_report.json"
-  quality_gate_report: "artifacts/quality_gate_report.json"
-  inference_output: "outputs/production_inference.csv"
-
-mlflow:
-  tracking_uri: "sqlite:///mlflow.db"
-  experiment_name: "Customer_Churn_MLOps"
-
-model:
-  n_estimators: 100
-  max_depth: 10
-  random_state: 42
-  class_weight: "balanced"
-
-registry:
-  model_name: "Customer_Churn_Model"
-  decision_metric: "recall"
-
-quality_gate:
-  metric: "recall"
-  minimum_value: 0.70
-```
-
----
-
-# 🧹 Data Preprocessing
-
-The preprocessing process performs several operations:
-
-1. Loads the raw dataset.
-2. Removes the `customerID` identifier.
-3. Converts `TotalCharges` to numeric format.
-4. Handles missing values.
-5. Converts the target variable into numerical values.
-6. Performs a stratified train/test split.
-7. Identifies numerical and categorical features.
-8. Applies numerical preprocessing.
-9. Applies categorical preprocessing.
-10. Generates final machine learning datasets.
-11. Saves the preprocessing pipeline.
-
-The MLOps preprocessing stage is:
-
-```bash
-python src/mlops_pipeline/03_preprocessing.py
-```
-
-The preprocessing pipeline is saved to:
-
-```text
-models/preprocessor.pkl
-```
-
----
-
-# 🤖 Model Training
-
-The project uses a **Random Forest Classifier**.
-
-Current model configuration:
-
-```text
-n_estimators = 100
-max_depth = 10
-random_state = 42
-class_weight = balanced
-```
-
-The complete MLOps training stage is:
-
-```bash
-python src/mlops_pipeline/05_train_registry.py
-```
-
-The trained model is also saved locally under:
-
-```text
-models/
-```
-
----
-
-# 📈 Model Evaluation
-
-The evaluation stage calculates:
-
-* Accuracy
-* Precision
-* Recall
-* F1 Score
-* ROC-AUC
-* Confusion Matrix
-
-Run:
-
-```bash
-python src/mlops_pipeline/06_model_evaluation.py
-```
-
-The evaluation report is generated at:
-
-```text
-artifacts/model_evaluation_report.json
-```
-
----
-
-# 📊 Model Performance
-
-The successfully executed MLOps pipeline produced:
-
-| Metric    |  Score |
-| --------- | -----: |
-| Accuracy  | 75.59% |
-| Precision | 52.76% |
-| Recall    | 76.74% |
-| F1 Score  | 62.53% |
-| ROC-AUC   | 84.33% |
-
-Confusion Matrix:
-
-```text
-[[778 257]
- [ 87 287]]
-```
-
----
-
-# 🔬 Experiment Tracking
-
-MLflow is used for experiment tracking and model management.
-
-The project uses:
-
-```text
-Experiment:
-Customer_Churn_MLOps
-```
-
-MLflow uses SQLite as the local tracking backend:
-
-```text
-sqlite:///mlflow.db
-```
-
-MLflow tracks:
-
-* Parameters
-* Metrics
-* Model runs
-* Artifacts
-* Model versions
-* Registered models
-
----
-
-# 🗂️ Model Registry
-
-The registered model is:
-
-```text
-Customer_Churn_Model
-```
-
-The training stage automatically creates model versions in MLflow Model Registry.
-
-Example model versions generated during project execution include:
-
-```text
-Version 1
-Version 2
-Version 3
-Version 4
-Version 5
-```
-
-The registry supports:
-
-* Model registration
-* Model versioning
-* Model comparison
-* Staging
-* Production
-* Model lifecycle management
-* Model archiving
-
----
-
-# 🚦 Model Quality Gate
-
-The project includes an automated **Model Quality Gate**.
-
-The configured decision metric is:
-
-```text
-Recall
-```
-
-Minimum required value:
-
-```text
-0.70
-```
-
-The successfully trained model achieved:
-
-```text
-Recall = 0.7674
-```
-
-Therefore:
-
-```text
-Quality Gate → PASSED
-```
-
-Run the quality gate separately with:
-
-```bash
-python src/mlops_pipeline/07_quality_gate.py
-```
-
-If the model does not satisfy the configured threshold, the pipeline stops before model promotion.
-
----
-
-# 🔄 Model Lifecycle Automation
-
-The project contains automated model lifecycle management.
-
-Run:
-
-```bash
-python src/mlops_pipeline/08_automate_lifecycle.py
-```
-
-The lifecycle process:
-
-1. Identifies newly registered models.
-2. Moves new versions to Staging.
-3. Identifies the current Production model.
-4. Compares the Staging model with Production.
-5. Uses Recall as the decision metric.
-6. Promotes a better model.
-7. Keeps Production unchanged when the challenger does not improve.
-8. Archives unsuccessful model versions.
-
-Example from the successful pipeline execution:
-
-```text
-Production Version 1 | recall=0.7674
-Staging Version 5    | recall=0.7674
-```
-
-The Production model remained unchanged because the new version did not improve the Production metric.
-
----
-
-# 🔮 Production Inference
-
-The Production inference stage loads the model from MLflow Model Registry:
-
-```text
-models:/Customer_Churn_Model/Production
-```
-
-Run:
-
-```bash
-python src/mlops_pipeline/09_inference.py
-```
-
-Example predictions:
-
-```text
- Predicted_Churn  Churn_Probability
-               0             0.4847
-               1             0.8223
-               1             0.8520
-               0             0.4884
-               1             0.6065
-```
-
-The generated predictions are saved to:
-
-```text
-outputs/production_inference.csv
-```
-
----
-
-# 🧪 Failure Injection Testing
-
-The project includes failure-injection tests to verify how the MLOps pipeline handles failures.
-
-Run:
-
-```bash
-python src/mlops_pipeline/10_failure_injection.py
-```
-
-The failure tests cover scenarios including:
-
-* Missing data
-* Invalid data types
-* Schema mismatch
-* Preprocessing inconsistency
-* Missing model/recovery scenarios
-
-This helps verify that the pipeline fails safely instead of silently producing invalid results.
-
----
-
-# 🚀 Complete MLOps Pipeline
-
-The main pipeline runner is:
-
-```text
-src/mlops_pipeline/churn_prediction_pipeline.py
-```
-
-Run the complete pipeline using:
+For API-only dependencies, install:
 
 ```powershell
-python src/mlops_pipeline/churn_prediction_pipeline.py
+python -m pip install -r requirements-api.txt
 ```
 
-The pipeline executes:
+Ensure `config.yaml`, the raw dataset, the required processed split artifacts, and the expected MLflow tracking store are present before executing the corresponding pipeline stage. Do not publish credentials or a private MLflow database in the README or repository.
 
-```text
-1. Data Loading
-2. Raw Data Validation
-3. Preprocessing
-4. Processed Output Validation
-5. Training + MLflow + Model Registry
-6. Model Evaluation
-7. Model Quality Gate
-8. Automated Model Lifecycle
-9. Production Inference
-```
+## Running the System
 
-If any stage fails, the pipeline stops automatically.
+Run commands from the repository root while the intended virtual environment is active.
 
-A successful execution produces:
-
-```text
-[SUCCESS] Churn Prediction MLOps Pipeline completed successfully.
-```
-
-The complete pipeline run log is saved to:
-
-```text
-logs/churn_prediction_pipeline_run_log.json
-```
-
----
-
-# 🔄 Baseline Pipeline
-
-The original baseline pipeline is also available.
-
-Run:
-
-```bash
-python pipelines/run_lab3_baseline.py
-```
-
-The baseline workflow follows:
-
-```text
-Preprocessing
-     ↓
-Training
-     ↓
-Evaluation
-```
-
----
-
-# 📊 Experiment Tracking Pipeline
-
-The experiment tracking workflow is available through:
-
-```bash
-python pipelines/run_lab4_tracking.py
-```
-
-It demonstrates experiment tracking and model-related logging.
-
----
-
-# 🚀 Extended MLOps Pipeline
-
-The extended pipeline can be run using:
-
-```bash
-python pipelines/run_lab5_pipeline.py
-```
-
-This provides the earlier project workflow in addition to the newer `src/mlops_pipeline/` implementation.
-
----
-
-# 🗂️ Registry Pipeline
-
-The registry workflow is available through:
-
-```bash
-python pipelines/run_lab6_registry.py
-```
-
-It demonstrates model registration and registry-related operations.
-
----
-
-# 🔍 Data Validation
-
-The project includes data validation functionality.
-
-The original validation script can be executed using:
-
-```bash
-python src/validate_data.py
-```
-
-The newer complete MLOps pipeline performs raw data validation through:
-
-```bash
-python src/mlops_pipeline/02_validate_data.py
-```
-
-Data validation helps detect:
-
-* Missing columns
-* Unexpected columns
-* Incorrect data types
-* Invalid values
-* Schema inconsistencies
-
----
-
-# ✅ Output Validation
-
-The original output validation script is:
-
-```bash
-python src/validate_outputs.py
-```
-
-The complete MLOps pipeline uses:
-
-```bash
-python src/mlops_pipeline/04_validate_outputs.py
-```
-
-The validation checks whether the expected preprocessing outputs were generated correctly.
-
----
-
-# 🔁 Reproducibility
-
-The project uses deterministic preprocessing and model configuration.
-
-Important reproducibility settings include:
-
-```text
-Random State = 42
-Test Size    = 0.20
-```
-
-The same preprocessing logic is used for the training and inference workflow.
-
-The preprocessing pipeline is serialized using Joblib:
-
-```text
-models/preprocessor.pkl
-```
-
-This helps maintain consistent transformations between training and inference.
-
----
-
-# 📋 Important Files
-
-## `config.yaml`
-
-Contains:
-
-* Dataset paths
-* Target and ID columns
-* Train/test configuration
-* Model configuration
-* MLflow configuration
-* Registry configuration
-* Quality-gate configuration
-* Output paths
-
----
-
-## `src/mlops_pipeline/01_load_data.py`
-
-Responsible for:
-
-* Loading the raw dataset
-* Checking dataset availability
-* Generating the data loading report
-
----
-
-## `src/mlops_pipeline/02_validate_data.py`
-
-Responsible for:
-
-* Schema validation
-* Raw dataset validation
-* Detecting invalid data
-
----
-
-## `src/mlops_pipeline/03_preprocessing.py`
-
-Responsible for:
-
-* Data cleaning
-* Target encoding
-* Train/test splitting
-* Numerical preprocessing
-* Categorical preprocessing
-* Saving processed datasets
-* Saving the preprocessing pipeline
-
----
-
-## `src/mlops_pipeline/04_validate_outputs.py`
-
-Responsible for validating:
-
-* Processed arrays
-* Data shapes
-* Missing values
-* Raw train/test files
-* Preprocessing outputs
-
----
-
-## `src/mlops_pipeline/05_train_registry.py`
-
-Responsible for:
-
-* Random Forest training
-* MLflow experiment tracking
-* Metric logging
-* Model serialization
-* Model registration
-
----
-
-## `src/mlops_pipeline/06_model_evaluation.py`
-
-Responsible for:
-
-* Loading the trained model
-* Generating predictions
-* Calculating evaluation metrics
-* Creating the confusion matrix
-* Saving the evaluation report
-
----
-
-## `src/mlops_pipeline/07_quality_gate.py`
-
-Responsible for:
-
-* Reading evaluation results
-* Checking the required metric
-* Comparing the metric against the minimum threshold
-* Generating the quality-gate report
-
----
-
-## `src/mlops_pipeline/08_automate_lifecycle.py`
-
-Responsible for:
-
-* Staging model versions
-* Comparing Staging and Production
-* Promoting better models
-* Maintaining the existing Production model when appropriate
-* Archiving unsuccessful model versions
-
----
-
-## `src/mlops_pipeline/09_inference.py`
-
-Responsible for:
-
-* Loading the Production model
-* Transforming customer data
-* Generating churn predictions
-* Generating churn probabilities
-* Saving Production inference results
-
----
-
-## `src/mlops_pipeline/10_failure_injection.py`
-
-Responsible for testing:
-
-* Missing-data failures
-* Invalid datatype failures
-* Schema failures
-* Preprocessing failures
-* Model/recovery failures
-
----
-
-## `src/mlops_pipeline/churn_prediction_pipeline.py`
-
-The main orchestration script that executes the complete nine-stage MLOps pipeline.
-
----
-
-# 🧪 Running the Complete Workflow
-
-### Step 1 — Activate environment
+### Run the main MLOps pipeline
 
 ```powershell
-.venv\Scripts\activate
+python .\src\mlops_pipeline\churn_prediction_pipeline.py
 ```
 
-### Step 2 — Install dependencies
+Use this when you intend to process a new valid batch or run the configured pipeline. If the latest batch has already been ingested, the orchestrator intentionally stops after data loading.
+
+### Run the monitoring and retraining trigger
 
 ```powershell
-python -m pip install -r requirements.txt
+python .\src\mlops_pipeline\12_monitor_trigger.py
 ```
 
-### Step 3 — Run the complete pipeline
+This script runs the combined drift analysis, checks whether `data/raw/new_churn.csv` exists, and decides whether to invoke the main pipeline. It writes a monitoring decision report under `outputs/monitoring/`.
+
+### Inspect the main reports
 
 ```powershell
-python src/mlops_pipeline/churn_prediction_pipeline.py
+python -m json.tool .\artifacts\data_load_report.json
+python -m json.tool .\reports\evaluation_report.json
+python -m json.tool .\reports\lifecycle_report.json
+python -m json.tool .\reports\deployment_automation_report.json
+Get-Content .\outputs\drift\drift_analysis_report.csv
 ```
 
-### Step 4 — Run failure tests
+The paths are generated during the relevant pipeline or monitoring execution; a report may not exist until that stage has run.
+
+## GitHub Actions Automation
+
+The integrated monitoring workflow is:
+
+```text
+.github/workflows/lab13_monitoring.yml
+```
+
+It supports:
+
+- `workflow_dispatch` for a manual run from GitHub Actions.
+- A schedule configured for minute 17 of each hour in `Asia/Kolkata`.
+
+The workflow targets the self-hosted runner labels `self-hosted`, `Windows`, and `X64`. It invokes the existing monitoring script instead of duplicating the MLOps logic in YAML.
+
+### Self-hosted runner operating mode
+
+The runner is currently configured in **interactive mode** and is started with:
 
 ```powershell
-python src/mlops_pipeline/10_failure_injection.py
+cd C:\actions-runner
+.\run.cmd
 ```
 
----
+Keep this terminal open while waiting for jobs. Scheduled runs require the PC to be awake and connected to the network, and the runner process must be listening when the workflow is due. Docker Desktop/Kubernetes must also be running for deployment or Kubernetes-dependent steps.
 
-# 📊 Evaluation Metrics
+### Environment-specific path
 
-The project evaluates the model using:
-
-### Accuracy
-
-Measures the proportion of correct predictions among all predictions.
+The current workflow uses this project path:
 
 ```text
-Accuracy = Correct Predictions / Total Predictions
+C:\Users\jnane\Favorites\churn-prediction
 ```
 
-### Precision
+If the project is moved to another directory or run by another Windows user, update the workflow path accordingly. The local project and its virtual environment are prerequisites for this self-hosted workflow; this workflow is not a portable GitHub-hosted Linux job.
 
-Measures how many customers predicted as churners actually churned.
+### Triggering a manual run
 
-```text
-Precision = TP / (TP + FP)
-```
+1. Open the repository on GitHub.
+2. Select **Actions**.
+3. Open **Lab 13 - End-to-End MLOps**.
+4. Click **Run workflow** and select `main`.
+5. Open the run and inspect the monitoring report and job steps.
 
-### Recall
+Scheduled workflows run from the repository's default branch. A workflow definition being present on `main` makes the configured schedule eligible; actual scheduled execution still depends on the runner being online and should be observed in Actions history.
 
-Measures how many actual churners were correctly identified.
+## Model Serving and Deployment
 
-```text
-Recall = TP / (TP + FN)
-```
-
-### F1 Score
-
-The F1 score combines precision and recall.
+The FastAPI application is under `api/`, and the Docker image uses the `Dockerfile` and `requirements-api.txt`. The deployment preparation step obtains the current MLflow Production model and matching preprocessor, then writes a deployment bundle:
 
 ```text
-F1 = 2 × (Precision × Recall) / (Precision + Recall)
-```
-
-### ROC-AUC
-
-Measures the model's ability to distinguish between churn and non-churn customers across classification thresholds.
-
----
-
-# ⚠️ False Positives and False Negatives
-
-The evaluation workflow can generate separate files for:
-
-```text
-outputs/false_positives.csv
-outputs/false_negatives.csv
-```
-
-### False Positive
-
-A customer is predicted as likely to churn but actually does not churn.
-
-### False Negative
-
-A customer is predicted as not churning but actually churns.
-
----
-
-# 📦 Generated Files
-
-Depending on the pipeline stage, the project can generate:
-
-```text
-data/processed/
-├── X_train_final.npy
-├── X_test_final.npy
-├── y_train.npy
-├── y_test.npy
-├── X_train_raw.csv
-├── X_test_raw.csv
-└── dataset_metadata.json
-
-models/
+deployment/
+├── model.pkl
 ├── preprocessor.pkl
-└── random_forest_model.pkl
-
-outputs/
-└── production_inference.csv
-
-artifacts/
-├── data_load_report.json
-├── preprocessing_summary_report.json
-├── model_evaluation_report.json
-└── quality_gate_report.json
-
-logs/
-└── churn_prediction_pipeline_run_log.json
-
-mlflow.db
+└── model_metadata.json
 ```
 
-Generated files that are not intended for source control are excluded using `.gitignore`.
-
----
-
-# 🤖 GitHub Actions
-
-The project includes GitHub Actions workflows under:
+The deployment metadata records the model name/version and source run. The deployment script uses a model-version image tag such as:
 
 ```text
-.github/workflows/
+churn-prediction-api:model-v1
 ```
 
-## Lab 8 CI Workflow
+The deployment automation builds the image when the tag does not already exist, otherwise it reuses the local image; it then updates the Kubernetes deployment and waits for rollout completion. The promotion gate prevents an unpromoted candidate from replacing the Production service.
 
-```text
-.github/workflows/lab8_ci.yml
+Useful operational commands:
+
+```powershell
+docker info
+kubectl get nodes
+kubectl get deployment churn-api
+kubectl get pods
+kubectl get service churn-api-service
+kubectl get deployment churn-api -o jsonpath="{.spec.template.spec.containers[0].image}"
 ```
 
-The workflow installs dependencies and executes the main MLOps pipeline.
+The currently configured Docker Desktop cluster and image cache are local to the host. Running the deployment on another machine requires the appropriate Docker/Kubernetes context, artifacts, and image availability.
 
-It can also upload generated artifacts, reports, logs, outputs, and related project results.
+## Important Reports and Artifacts
 
-## Lab 9 Failure Testing Workflow
+| Artifact | Purpose |
+|---|---|
+| `artifacts/data_load_report.json` | Ingestion status, row counts, and batch hash |
+| `data/raw/archive/dataset_lineage.json` | Dataset batch lineage and versions |
+| `data/raw/archive/churn_vNN.csv` | Archived dataset snapshots |
+| `artifacts/preprocessing_summary_report.json` | Preprocessing summary |
+| `reports/evaluation_report.json` | Candidate evaluation metrics |
+| `reports/quality_gate_report.json` | Quality-gate result |
+| `reports/lifecycle_report.json` | Candidate-versus-Production decision and promotion status |
+| `outputs/drift/data_drift_report.csv` | Feature-level data drift input report |
+| `outputs/drift/prediction_drift_report.csv` | Prediction/probability distribution drift report |
+| `outputs/drift/concept_drift_report.csv` | Model-performance change report |
+| `outputs/drift/drift_analysis_report.csv` | Combined drift decision summary |
+| `outputs/monitoring/monitor_trigger_report.json` | Monitoring and retraining-trigger result |
+| `logs/churn_prediction_pipeline_run_log.json` | Pipeline stage status and exit codes |
+| `outputs/inference_predictions.csv` | Production inference output |
+| `deployment/model_metadata.json` | Model version/run details used by serving |
+| `reports/deployment_automation_report.json` | Deployment automation result |
 
-```text
-.github/workflows/lab9_failure_tests.yml
+Some runtime folders are ignored by Git and should be regenerated or retained locally rather than committed wholesale. Check `.gitignore` before staging generated reports, model binaries, local databases, or incoming data files.
+
+## Verified Integration Run
+
+The following is a snapshot from a successful GitHub Actions end-to-end run, not a guarantee that future runs will produce identical metrics.
+
+### Dataset ingestion
+
+- Previous raw dataset: 7,244 rows.
+- Incoming batch: 100 rows.
+- New raw dataset after ingestion: 7,344 rows and 21 columns.
+- Batch identity/schema checks passed, and the previous dataset was archived as `churn_v03.csv`.
+
+### Candidate model version 17
+
+| Metric | Observed value |
+|---|---:|
+| Accuracy | 0.7672 |
+| Precision | 0.5466 |
+| Recall | 0.7219 |
+| F1 score | 0.6221 |
+| ROC-AUC | 0.8452 |
+| Recall threshold | 0.7000 |
+
+The candidate passed the configured recall quality gate. However, its recall did not beat the observed Production model recall of approximately `0.7807`, so candidate version 17 was archived and Production version 1 remained active. Deployment was correctly skipped. Production inference then completed using the existing Production model.
+
+This run verifies the **new-batch ingestion → training/registration → evaluation → quality gate → lifecycle rejection → conditional deployment skip** path. The deployment script was also independently verified against the existing Production version 1 Docker image and Kubernetes deployment. A real new candidate that is promoted and then deployed automatically has not yet been demonstrated in the recorded run.
+
+## Operational Requirements and Limitations
+
+1. **Interactive runner:** The Windows runner is not currently installed as a service. It needs `C:\actions-runner\run.cmd` running to receive jobs.
+2. **Local Windows path:** The monitoring workflow is tied to the project path shown above.
+3. **Local dependencies:** The workflow depends on the local virtual environment, project data/artifacts, MLflow tracking store, Docker Desktop, and Kubernetes context.
+4. **Drift report inputs:** `12_drift_analysis.py` combines existing data-, prediction-, and concept-drift CSV reports. Ensure the upstream reports are refreshed by the relevant monitoring scripts before each monitoring cycle; the combined analysis script itself reads those reports rather than generating all underlying drift measurements.
+5. **Schedule verification:** The schedule is configured, but it should be considered operational only after scheduled runs are observed in GitHub Actions while the runner is online.
+6. **MLflow API deprecation:** The current lifecycle script emits a deprecation warning for MLflow's legacy Model Registry stage-transition API. Current runs succeeded, but the lifecycle code should eventually migrate to the registry approach recommended by the installed MLflow version.
+7. **Promotion path:** A candidate promotion is metric-dependent. A passed quality gate does not imply that the candidate will be promoted.
+8. **Kubernetes checks:** Docker Desktop Kubernetes must be running for cluster health checks and deployment operations.
+
+## Troubleshooting
+
+### A batch is reported as `already_ingested`
+
+The file hash matches an entry in `data/raw/archive/dataset_lineage.json`. This is expected for a batch that has already been processed. Supply a new, schema-valid batch with unique customer IDs to test ingestion again.
+
+### The runner is offline
+
+Start the runner interactively:
+
+```powershell
+cd C:\actions-runner
+.\run.cmd
 ```
 
-This workflow runs the normal pipeline and then executes the failure-injection tests.
+Check GitHub **Settings → Actions → Runners** and confirm the runner is online/idle.
+
+### `kubectl` cannot reach the cluster
+
+Start Docker Desktop and wait until its Kubernetes cluster is healthy, then run:
+
+```powershell
+docker info
+kubectl get nodes
+kubectl get deployment churn-api
+```
+
+### Docker reports permission denied from Python
+
+Check the process context, not just whether `docker` works interactively. In this environment, the virtual-environment Python executable previously had a Low Mandatory Integrity label, causing Python-launched Docker commands to fail. The executable's label was corrected to Medium and a Python subprocess Docker check subsequently succeeded. Avoid changing Docker permissions or disabling TLS verification as a first response.
+
+### Deployment is skipped
+
+Inspect `reports/lifecycle_report.json`. If `promoted` is `false`, `deploy_if_promoted.py` is designed to skip deployment. This is the correct safety behavior when a candidate does not improve on Production.
+
+### The scheduled workflow does not run
+
+Confirm the workflow file is on `main`, the schedule is present in `.github/workflows/lab13_monitoring.yml`, and the self-hosted runner is online at the scheduled time. The PC must not be asleep and the interactive runner window must remain open.
+
+## Documentation
+
+Additional documents are maintained in `docs/`:
+
+- [`ARCHITECTURE.md`](docs/ARCHITECTURE.md) — component and system architecture.
+- [`LAB13_END_TO_END.md`](docs/LAB13_END_TO_END.md) — implementation and integration evidence.
+- [`RUNBOOK.md`](docs/RUNBOOK.md) — operational instructions and troubleshooting.
+- [`LAB7_PIPELINE.md`](docs/LAB7_PIPELINE.md) — pipeline engineering.
+- [`LAB8_CI_REPORT.md`](docs/LAB8_CI_REPORT.md) — continuous integration workflow.
+- [`LAB9_FAILURE_HANDLING_REPORT.md`](docs/LAB9_FAILURE_HANDLING_REPORT.md) — failure injection and recovery.
+- [`MLFLOW_CI_SETUP.md`](docs/MLFLOW_CI_SETUP.md) — MLflow and CI setup notes.
+- [`lab11_containerization_report.md`](docs/lab11_containerization_report.md) — containerization evidence.
+- [`lab11_deployment_debugging_report.md`](docs/lab11_deployment_debugging_report.md) — deployment debugging evidence.
+
+## Security Notes
+
+- Never commit GitHub runner registration/removal tokens, passwords, access tokens, or other secrets.
+- Do not commit a local MLflow database or private runtime data unless you intentionally intend to publish it.
+- A self-hosted runner executes workflow code on your own machine. Avoid running untrusted pull-request code or workflows from unknown contributors on this runner. For a personal development runner, a private repository is safer than a public repository.
+- Review `.gitignore` before committing dataset batches, model binaries, generated logs, or reports.
 
 ---
 
-# 🔐 Git and GitHub
+## Final Summary
 
-The project uses Git for version control.
-
-Initialize Git:
-
-```bash
-git init
-```
-
-Check status:
-
-```bash
-git status
-```
-
-Add files:
-
-```bash
-git add .
-```
-
-Create a commit:
-
-```bash
-git commit -m "Add complete MLOps pipeline and CI workflows"
-```
-
-Rename the branch:
-
-```bash
-git branch -M main
-```
-
-Connect the GitHub repository:
-
-```bash
-git remote add origin https://github.com/Tejasai846/Customer_Churn.git
-```
-
-Push the project:
-
-```bash
-git push -u origin main
-```
-
-Repository:
-
-https://github.com/Tejasai846/Customer_Churn
-
----
-
-# 🚫 Git Ignore
-
-The project uses `.gitignore` to avoid committing unnecessary generated files such as:
-
-```text
-.venv/
-venv/
-__pycache__/
-.ipynb_checkpoints/
-data/processed/*.npy
-models/*.pkl
-logs/
-outputs/
-mlruns/
-mlflow.db
-artifacts/
-.vscode/
-```
-
-This keeps the Git repository clean and prevents generated files from being unnecessarily tracked.
-
----
-
-# 📚 Project Learning Outcomes
-
-Through this project, the following concepts are demonstrated:
-
-* Machine Learning classification
-* Data preprocessing
-* Feature engineering
-* Train/test splitting
-* Random Forest classification
-* Model evaluation
-* Precision and recall
-* F1 score
-* ROC-AUC
-* Data validation
-* Processed-output validation
-* Experiment tracking
-* Reproducibility
-* Model versioning
-* Model registry
-* Quality gates
-* Staging and Production models
-* Model lifecycle management
-* Champion/challenger comparison
-* Production inference
-* Failure injection
-* MLOps pipeline automation
-* Git version control
-* GitHub repository management
-* GitHub Actions
-
----
-
-# 🔮 Future Enhancements
-
-Possible future improvements include:
-
-* Develop a web-based prediction application.
-* Add a REST API for predictions.
-* Add Docker containerization.
-* Deploy the model to a cloud platform.
-* Add automated model retraining.
-* Add monitoring for model performance.
-* Add data drift detection.
-* Add model drift detection.
-* Create an interactive dashboard.
-* Add automated unit and integration testing.
-* Add production monitoring and alerting.
-* Migrate deprecated MLflow model-stage APIs to the newer MLflow model alias approach.
-
----
-
-# 👨‍💻 Project Author
-
-**Tejasai846**
-
-GitHub:
-
-https://github.com/Tejasai846
-
-Repository:
-
-https://github.com/Tejasai846/Customer_Churn
-
----
-
-# 📜 License
-
-This project is intended for **educational and academic purposes**.
-
----
-
-# ⭐ Project Summary
-
-This project demonstrates an end-to-end **Customer Churn Prediction machine learning system using MLOps practices**.
-
-The workflow combines:
-
-```text
-Data
- ↓
-Validation
- ↓
-Preprocessing
- ↓
-Training
- ↓
-MLflow Tracking
- ↓
-Model Registry
- ↓
-Evaluation
- ↓
-Quality Gate
- ↓
-Model Lifecycle
- ↓
-Production Inference
-```
-
-The complete nine-stage pipeline has been successfully executed locally, with all stages passing successfully.
-
-The project therefore demonstrates not only machine learning model development, but also the practical MLOps processes required to validate, track, register, evaluate, promote, and deploy machine learning models.
+This project demonstrates an MLOps lifecycle from data ingestion and validation to training, tracking, quality gates, model lifecycle decisions, inference, monitoring, and conditional deployment. The recorded integration test shows the system can process a new batch and safely reject a candidate that does not outperform the current Production model. GitHub Actions automation is integrated with a self-hosted Windows runner; unattended scheduling remains dependent on keeping that runner and its local services available.
